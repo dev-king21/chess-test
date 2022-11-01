@@ -1,0 +1,899 @@
+import random
+import time
+import math
+from copy import deepcopy
+from read import readInput
+from write import writeOutput
+class IllegalMove(Exception): pass
+
+N = 5
+NN = N ** 2
+WHITE, BLACK, EMPTY = 'O', 'X', '.'
+
+def s_colors(color):
+    if color == BLACK:
+        return WHITE
+    elif color == WHITE:
+        return BLACK
+    else:
+        return color
+
+EMPTY_b = EMPTY * NN
+
+def f_ty(c):
+    return N * c[0] + c[1]
+
+def unf_1(fc):
+    return divmod(fc, N)
+
+
+def obw(c):
+    return c[0] % N == c[0] and c[1] % N == c[1]
+
+
+def get_valid_neis_black(fc):
+    x, y = unf_1(fc)
+    possible_neis = ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1))
+    return [f_ty(n) for n in possible_neis if obw(n)]
+
+
+# neis are indexed by flat coordinates
+neis = [get_valid_neis_black(fc) for fc in range(NN)]
+
+
+def search(board, fc):
+    color1 = board[fc]
+    chain2 = set([fc])
+    reached = set()
+    fr = [fc]
+    while fr:
+        current_fc = fr.pop()
+        chain2.add(current_fc)
+        for fn in neis[current_fc]:
+            if board[fn] == color1 and not fn in chain2:
+                fr.append(fn)
+            elif board[fn] != color1:
+                reached.add(fn)
+    return chain2, reached
+
+def stone(color, board, fc):
+    return board[:fc] + color + board[fc + 1:]
+
+
+def e_stones(color, board, stones):
+    byteboard = bytearray(board, encoding='ascii')  # create mutable version of board
+    color = ord(color)
+    for fstone in stones:
+        byteboard[fstone] = color
+    return byteboard.decode('ascii')  # and cast back to string when done
+
+
+def maybe_capture_stones(board, fc):
+    chain, reached = search(board, fc)
+    if not any(board[fr] == EMPTY for fr in reached):
+        board = e_stones(EMPTY, board, chain)
+        return board, chain
+    else:
+        return board, []
+
+
+def it(board, fc, color):
+    if board[fc] != EMPTY:
+        raise IllegalMove
+    board = stone(color, board, fc)
+
+    opp_color = s_colors(color)
+    opp_stones = []
+    my_stones = []
+    for fn in neis[fc]:
+        if board[fn] == color:
+            my_stones.append(fn)
+        elif board[fn] == opp_color:
+            opp_stones.append(fn)
+
+    for fs in opp_stones:
+        board, _ = maybe_capture_stones(board, fs)
+
+    for fs in my_stones:
+        board, _ = maybe_capture_stones(board, fs)
+
+    return board
+
+
+def is_koish(board, fc):
+    'Check if fc is surrounded on all sides by 1 color, and return that color'
+    if board[fc] != EMPTY: return None
+    nei_colors = {board[fn] for fn in neis[fc]}
+    if len(nei_colors) == 1 and not EMPTY in nei_colors:
+        return list(nei_colors)[0]
+    else:
+        return None
+
+
+
+class Rule:
+    def __init__(self, n):
+        self.size = n
+        self.X_move = True
+        self.died_pieces = [] 
+        self.n_move = 0 
+        self.max_move = n * n - 1 
+        self.komi = n/2 
+        self.verbose = False 
+
+
+    def sb(self, pt, pb, b):
+        for xa in range(self.size):
+            for ya in range(self.size):
+                if pb[xa][ya] == pt and b[xa][ya] != pt:
+                    self.died_pieces.append((xa, ya))
+
+        self.previous_board = pb
+        self.board = b
+
+    def cb(self, b1, b2):
+        for xa in range(self.size):
+            for ya in range(self.size):
+                if b1[xa][ya] != b2[xa][ya]:
+                    return False
+        return True
+
+    def copy_(self):
+        return deepcopy(self)
+
+    def dn(self, xa, ya):
+
+        b = self.board
+        neis_point = []
+        if xa > 0: neis_point.append((xa-1, ya))
+        if xa < len(b) - 1: neis_point.append((xa+1, ya))
+        if ya > 0: neis_point.append((xa, ya-1))
+        if ya < len(b) - 1: neis_point.append((xa, ya+1))
+        return neis_point
+
+    def dna(self, xa, ya):
+        b = self.board
+        neis = self.dn(xa, ya)  # Detect neis
+        group_allies = []
+        for pi in neis:
+            if b[pi[0]][pi[1]] == b[xa][ya]:
+                group_allies.append(pi)
+        return group_allies
+
+    def ad(self, xa, ya):
+        s = [(xa, ya)]
+        ally_members = []
+        while s:
+            pi = s.pop()
+            ally_members.append(pi)
+            neighbor_allies = self.dna(pi[0], pi[1])
+            for ally in neighbor_allies:
+                if ally not in s and ally not in ally_members:
+                    s.append(ally)
+        return ally_members
+
+    def fl(self, i, j):
+        b_ = self.board
+        am = self.ad(i, j)
+        for member in am:
+            neis = self.dn(member[0], member[1])
+            for pi in neis:
+                if b_[pi[0]][pi[1]] == 0:
+                    return True
+        return False
+
+    def fdp(self, pt):
+        b = self.board
+        died_pis_found = []
+
+        for xa in range(len(b)):
+            for ya in range(len(b)):
+                if b[xa][ya] == pt:
+                    if not self.fl(xa, ya):
+                        died_pis_found.append((xa,ya))
+        return died_pis_found
+
+
+    def rdp(self, pt):
+        died_pis_fo = self.fdp(pt)
+        if not died_pis_fo: return []
+        self.rcp(died_pis_fo)
+        return died_pis_fo
+
+
+    def rcp(self, positions):
+        b_remove = self.board
+        for pi in positions:
+            b_remove[pi[0]][pi[1]] = 0
+        self.update_(b_remove)
+
+
+    def ovpc(self, xa, ya, pt, test_check=False):
+        b = self.board
+        verbose = self.verbose
+        if test_check:
+            verbose = False
+
+        if not (xa >= 0 and xa < len(b)):
+            return False
+        if not (ya >= 0 and ya < len(b)):
+            return False
+
+        if b[xa][ya] != 0:
+            return False
+
+        test_match = self.copy_()
+        test_b = test_match.board
+
+        test_b[xa][ya] = pt
+        test_match.update_(test_b)
+        if test_match.fl(xa, ya):
+            return True
+
+        test_match.rdp(3 - pt)
+        if not test_match.fl(xa, ya):
+            return False
+        else:
+            if self.died_pieces and self.cb(self.previous_board, test_match.board):
+                return False
+        return True
+        
+
+    def update_(self, new_b):
+        self.board = new_b
+
+
+    def marks(self, pt):
+        board = self.board
+        c = 0
+        for xa in range(self.size):
+            for ya in range(self.size):
+                if board[xa][xa] == pt:
+                    c += 1
+        return c
+
+class Match:
+    def __init__(self, n):
+        self.size = n
+        self.X_move = True
+        self.died_pieces = []
+        self.n_move = 0
+        self.max_move = n * n - 1
+        self.komi = n/2
+        self.verbose = False
+
+    def sb(self, pt, pb, b):
+        for xa in range(self.size):
+            for ya in range(self.size):
+                if pb[xa][ya] == pt and b[xa][ya] != pt:
+                    self.died_pieces.append((xa, ya))
+
+        self.previous_board = pb
+        self.board = b
+
+    def cb(self, b1, b2):
+        for xa in range(self.size):
+            for ya in range(self.size):
+                if b1[xa][ya] != b2[xa][ya]:
+                    return False
+        return True
+
+    def copy_(self):
+        return deepcopy(self)
+
+    def dn(self, xa, ya):
+        b = self.board
+        neis = []
+        if xa > 0: neis.append((xa-1, ya))
+        if xa < len(b) - 1: neis.append((xa+1, ya))
+        if ya > 0: neis.append((xa, ya-1))
+        if ya < len(b) - 1: neis.append((xa, ya+1))
+        return neis
+
+    def dnm(self, b, xa, ya):
+        neis = []
+        if xa > 0: neis.append((xa-1, ya))
+        if xa < len(b) - 1: neis.append((xa+1, ya))
+        if xa > 0: neis.append((xa, ya-1))
+        if xa < len(b) - 1: neis.append((xa, ya+1))
+        return neis
+
+    def dna(self, xa, ya):
+        b = self.board
+        neis = self.dn(xa,ya)
+        allies = []
+        # for each position in neighbour
+        for x in neis:
+            if b[x[0]][x[1]] == b[xa][ya]:
+                allies.append(x)
+        return allies
+
+    def dnam(self, b, i, j):
+        neis = self.dnm(b, i, j)
+        allies = []
+        for pi in neis:
+            if b[pi[0]][pi[1]] == b[i][j]:
+                allies.append(pi)
+        return allies
+
+    def ad(self, i, j):
+        stack = [(i, j)]
+        allies = []
+        while stack:
+            pi = stack.pop()
+            allies.append(pi)
+            neighbor_allies = self.dna(pi[0], pi[1])
+            for ally in neighbor_allies:
+                if ally not in stack and ally not in allies:
+                    stack.append(ally)
+        return allies
+
+    def adm(self, b, i, j):
+        stack = [(i, j)]
+        allies = []
+        while stack:
+            pi = stack.pop()
+            allies.append(pi)
+            neighbor_allies = self.dnam(b, pi[0], pi[1])
+            for ally in neighbor_allies:
+                if ally not in stack and ally not in allies:
+                    stack.append(ally)
+        return allies
+
+    def fl(self, i, j):
+        b = self.board
+        allies = self.ad(i, j)
+        for x in allies:
+            neis = self.dn(x[0], x[1])
+            for y in neis:
+                if b[y[0]][y[1]] == 0:
+                    return True
+        return False
+
+    def flm(self, b, ii, jj):
+        allies = self.adm(b, ii, jj)
+        for x in allies:
+            neis = self.dnm(b, x[0], x[1])
+            for y in neis:
+                if b[y[0]][y[1]] == 0:
+                    return True
+        return False
+
+    def fdp(self, pt):
+        b = self.board
+        died_pis = []
+        for i in range(len(b)):
+            for j in range(len(b)):
+                # Check if there is a pi at this position:
+                if b[i][j] == pt:
+                    # The pi die if it has no liberty
+                    if not self.fl(i, j):
+                        died_pis.append((i,j))
+        return died_pis
+
+    def fdpm(self, b, pt):
+        died_pis = []
+        for i in range(len(b)):
+            for j in range(len(b)):
+                if b[i][j] == pt:
+                    if not self.flm(b, i, j):
+                        died_pis.append((i,j))
+        return died_pis
+
+
+    def rdp(self, pt):
+        died_pis = self.fdp(pt)
+        if not died_pis: return []
+        self.rcp(died_pis)
+        return died_pis
+
+
+    def rcp(self, positions):
+        b = self.board
+        for pi in positions:
+            b[pi[0]][pi[1]] = 0
+        self.update_(b)
+
+
+    def vpc(self, i, j, pt, test_check=False):
+        b = self.board
+        verbose = self.verbose
+        if test_check:
+            verbose = False
+
+        if not (i >= 0 and i < len(b)):
+            return False
+        if not (j >= 0 and j < len(b)):
+            return False
+
+        if b[i][j] != 0:
+            return False
+        test_go = self.copy_()
+        test_b = test_go.board
+        test_b[i][j] = pt
+        test_go.update_(test_b)
+        if test_go.fl(i, j):
+            return True
+        test_go.rdp(3 - pt)
+        if not test_go.fl(i, j):
+            return False
+        else:
+            if self.died_pieces and self.cb(self.previous_board, test_go.board):
+                return False
+        return True
+
+    def vpcm(self, b, i, j, pt, test_check=False):
+        verbose = self.verbose
+        if test_check:
+            verbose = False
+        if not (i >= 0 and i < len(b)):
+            return False
+        if not (j >= 0 and j < len(b)):
+            return False
+        if b[i][j] != 0:
+            return False
+        test_go = self.copy_()
+        test_b = test_go.board
+        test_b[i][j] = pt
+        test_go.update_(test_b)
+        if test_go.fl(i, j):
+            return True
+        test_go.rdp(3 - pt)
+        if not test_go.fl(i, j):
+            return False
+        else:
+            if self.died_pieces and self.cb(self.previous_board, test_go.board):
+                return False
+        return True
+
+
+    def update_(self, new_b):
+        self.board = new_b
+
+
+    def marks(self, pt):
+        b = self.board
+        cnt = 0
+        for i in range(self.size):
+            for j in range(self.size):
+                if b[i][j] == pt:
+                    cnt += 1
+        return cnt
+##########################################################
+#####################################################
+def fol(b, pt):
+    placement = []
+    for i in range(match.size):
+        for j in range(match.size):
+            if b[i][j] == pt:
+                placement.append((i,j))
+    return placement
+
+
+
+def em(b, color):
+    s2 = match.marks(2)
+    s1 = match.marks(1)
+    o, x = s2 + match.komi, s1
+    s=0
+    if color == 1:
+        s = x - o
+        if s > 0:
+
+            print("You are Win!")
+    if color == 2:
+        s = o - x
+        if s < 0:
+            print("You are lose!")
+    print('------This is the marks for this board--------')
+    print("diff:",s,"__","white",s2,":","black",s1)
+    return s
+
+def ec(b,player):
+    possible_placements = []
+    for i in range(match.size):
+        for j in range(match.size):
+            if match.vpc(i, j, player, test_check = True):
+                possible_placements.append((i,j))
+    random.shuffle(possible_placements)
+    return possible_placements
+
+def ecm(b,player):
+    possible_placements = []
+    for i in range(match.size):
+        for j in range(match.size):
+            if match.vpcm(b, i, j, player, test_check = True):
+                possible_placements.append((i,j))
+    random.shuffle(possible_placements)
+    return possible_placements
+
+def oec(ru,b,player):
+    possible_placements = []
+    for i in range(ru.size):
+        for j in range(ru.size):
+            if ru.ovpc(i, j, player, test_check = True):
+                possible_placements.append((i,j))
+    random.shuffle(possible_placements)
+    return possible_placements
+
+
+def vm(x,y,player):
+    #check if move is valid
+    if (x,y) in ec(b,player):
+        return True
+    else:
+        return False
+
+def sm(b, x, y, player):
+    if vm(x,y, player):
+        match.previous_board = deepcopy(b)
+        b[x][y] = player
+        match.board = b
+        return b
+    else:
+        return b
+
+def ovm(ru, x,y,player):
+    if (x,y) in oec(ru,b,player):
+        return True
+    else:
+        return False
+
+def osm(ru, b, x, y, player):
+    if ovm(ru, x,y, player):
+        ru.previous_board = deepcopy(b)
+        b[x][y] = player
+        ru.board = b
+        return b
+    else:
+        return b
+
+def mm_min_node(b, color, depth, alpha, beta, start_time):
+    new_b = deepcopy(b)
+    cur_min = math.inf
+    moves = ec(new_b,color)
+    best_move = 0
+
+    end = time.time()
+    if len(moves) == 0 or depth == 0 or end - start_time> 8.5:
+        return (-1,-1), em(new_b, color)
+    else: 
+        for i in moves:
+            b_to_pass_each_time = deepcopy(b)
+            new_b = sm(b_to_pass_each_time, i[0], i[1], color)
+            match.rdp(3 - color)
+            if color == 1:
+                next_player = 2
+            else:
+                next_player = 1
+            new_move, new_marks = mm_max_node(new_b, next_player, depth - 1, alpha, beta, start_time)
+
+            if new_marks < cur_min:
+                cur_min = new_marks
+                best_move = i
+            beta = min(new_marks, beta) 
+            if beta <= alpha:
+                break
+        return best_move, cur_min 
+
+def mm_max_node(b, color, depth, alpha, beta, start_time):
+    end = time.time()
+    new_b = deepcopy(b)
+    cur_max = -math.inf
+    moves = ec(new_b,color)
+    stonestoremove = []
+    bm=0
+    for i in moves:
+        match.board[i[0]][i[1]] = color
+        opmoves = ec(match.board, 3 - color)
+        for j in opmoves:
+            match.board[j[0]][j[1]] = 3 - color
+            deadstones = match.fdp(color)
+            match.board[j[0]][j[1]] = 0
+            if i in deadstones:
+                if i not in stonestoremove:
+                    stonestoremove.append(i)
+        match.board[i[0]][i[1]] = 0
+
+    for x in stonestoremove:
+        if x in moves:
+            moves.remove(x)
+
+
+    if len(moves) == 0 or depth == 0 or end - start_time> 8.5:
+        return (-1,-1), em(new_b, color)
+    else: 
+        for i in moves:
+            b_to_pass_each_time = deepcopy(b)
+            new_b = sm(b_to_pass_each_time, i[0], i[1], color)
+            match.rdp(3 - color)
+            if color == 1:
+                next_player = 2
+            else:
+                next_player = 1
+            new_move, new_marks = mm_min_node(new_b, next_player, depth - 1, alpha, beta, start_time)
+            if new_marks > cur_max:
+                cur_max = new_marks
+                bm = i
+            alpha = max(new_marks, alpha)
+            if beta <= alpha:
+                break
+        return bm, cur_max
+
+def smm(b, color):
+    start = time.time()
+    best_move, marks = mm_max_node(b, color, max_depth, -math.inf, math.inf, start )
+    i, j = best_move[0], best_move[1]
+
+    return i,j, marks
+
+def om_min_node(ru,b, color, depth, alpha, beta, start_time):
+    new_b = deepcopy(b)
+    cur_min = math.inf
+    moves = oec(ru, new_b,color)
+    bm=0
+    end = time.time()
+    if len(moves) == 0 or depth == 0 or end - start_time> 8.5:
+        return (-1,-1), em(new_b, color)
+    else: 
+        for i in moves:
+
+            b_to_pass_each_time = deepcopy(b)
+            new_b = osm(ru,b_to_pass_each_time, i[0], i[1], color)
+            ru.rdp(3 - color)
+            if color == 1:
+                next_player = 2
+            else:
+                next_player = 1
+            new_move, new_marks = om_max_node(ru,new_b, next_player, depth - 1, alpha, beta, start_time)
+            if new_marks < cur_min:
+                cur_min = new_marks
+                bm = i
+            beta = min(new_marks, beta) 
+            if beta <= alpha:
+                break
+        return bm, cur_min
+
+def om_max_node(ru, b, color, depth, alpha, beta, start_time):
+    end = time.time()
+    new_b = deepcopy(b)
+    # b_to_pass_each_time = deepcopy(b)
+    cur_max = -math.inf
+    moves = oec(ru, new_b,color)
+    bm=0
+    if len(moves) == 0 or depth == 0 or end - start_time> 8.5:
+        return (-1,-1), em(new_b, color)
+    else: 
+        for i in moves:
+
+            b_to_pass_each_time = deepcopy(b)
+            new_b = osm(ru,b_to_pass_each_time, i[0], i[1], color)
+            ru.rdp(3 - color)
+            if color == 1:
+                next_player = 2
+            else:
+                next_player = 1
+            new_move, new_marks = om_min_node(ru,new_b, next_player, depth - 1, alpha, beta, start_time)
+            if new_marks > cur_max:
+                cur_max = new_marks
+                bm = i
+            alpha = max(new_marks, alpha) 
+            if beta <= alpha:
+                break
+        return bm, cur_max
+
+
+def osmm(ru, b, color):
+    start = time.time()
+    best_move, marks = om_max_node(ru, b, color, max_depth_opponent, -math.inf, math.inf, start )
+    i, j = best_move[0], best_move[1]
+
+    return i,j, marks
+
+def killcount(match, pt):
+    empty_spaces = []
+    for i in range(match.size):
+        for j in range(match.size):
+            if match.board[i][j] == 0:
+                empty_spaces.append((i,j))
+    killcount = dict()
+    for i in empty_spaces:
+        match.board[i[0]][i[1]] = pt
+        died_pis = match.fdp(3-pt)
+        match.board[i[0]][i[1]] = 0
+        if len(died_pis) >= 1:
+            killcount[i] = len(died_pis)
+    return killcount
+
+def main(killcount,match, pt):
+    sorted_killcount = sorted(killcount, key = killcount.get, reverse = True)
+    for i in sorted_killcount:
+        testb = deepcopy(match.board)
+        testb[i[0]][i[1]] = pt
+        died_stone = match.fdpm(testb, 3 - pt)
+        for x in died_stone:
+            testb[x[0]][x[1]] = 0
+        if i !=None and match.previous_board != testb:
+            return i
+    m = ec(match.board,pt)
+
+    m_to_remove = []
+    for i in m:
+        match.board[i[0]][i[1]] = pt
+        oppmove = ecm(match.board, 3-pt)
+        for j in oppmove:
+            match.board[j[0]][j[1]] = 3 - pt
+            died_pis = match.fdp(pt)
+            match.board[j[0]][j[1]] = 0
+            if i in died_pis:
+                m_to_remove.append(i)
+        match.board[i[0]][i[1]] = 0
+
+    for x in m_to_remove:
+        if x in m:
+            m.remove(x)
+    print('these are the final moves')
+    print(m)
+
+    if len(m) == 0:
+        return "PASS"
+
+    save_m = dict()
+    opponent_m = []
+    for i in range(match.size):
+        for j in range(match.size):
+            if match.board[i][j] == 0:
+                opponent_m.append((i,j))
+
+    for i in opponent_m:
+        match.board[i[0]][i[1]] = 3-pt
+        our_dead_stones = match.fdp(pt)
+        match.board[i[0]][i[1]] = 0
+        if len(our_dead_stones) >=1:
+            save_m[i] = len(our_dead_stones)
+
+    sorted_save_m = sorted(save_m, key = save_m.get, reverse = True)
+    for i in sorted_save_m:
+        if i != None and i in m:
+            return i
+
+    position_of_opponent = fol(match.board, 3-pt)
+    empty_x = []
+    #empty_y = []
+    neighbours = []
+
+    for i in position_of_opponent:
+        neis = [(i[0]+b[0], i[1]+b[1]) for b in 
+                    [(-1,0), (1,0), (0,-1), (0,1)] 
+                    if ( (0 <= i[0]+b[0] < match.size) and (0 <= i[1]+b[1] < match.size))]
+        for x in neis:
+            neighbours.append(x)
+
+    for i in neighbours:
+        if match.board[i[0]][i[1]]==0:
+            empty_x.append(i)
+
+    for x in m:
+        testb = deepcopy(match.board)
+        testb[x[0]][x[1]] = pt
+        died_stone = match.fdpm(testb, 3 - pt)
+        for n in died_stone:
+            testb[n[0]][n[1]] = 0
+        position_of_opponent = fol(testb, 3 - pt)
+        empty_y = []
+        neighbours = []
+
+        for i in position_of_opponent:
+            neis = [(i[0]+b[0], i[1]+b[1]) for b in 
+                        [(-1,0), (1,0), (0,-1), (0,1)] 
+                        if ( (0 <= i[0]+b[0] < match.size) and (0 <= i[1]+b[1] < match.size))]
+            for n in neis:
+                neighbours.append(n)
+
+        for z in neighbours:
+            if match.board[z[0]][z[1]] == 0:
+                empty_y.append(z)
+
+        if len(empty_x) - len(empty_y) >=1:
+            return x
+    if len(m) >= 15:
+        if (2,2) in m:
+            x = 2
+            y = 2
+            return (x,y)
+        if (1,1) in m:
+            x = 1
+            y = 1
+            return (x,y)
+        if (1,3) in m:
+            x = 1
+            y = 3
+            return (x,y)
+        if (3,1) in m:
+            x = 3
+            y = 1
+            return (x,y)
+        if (3,3) in m:
+            x = 3
+            y = 3
+            return (x,y)
+        if (2,0) in m:
+            x = 2
+            y = 0
+            return (x,y)
+        if (2,4) in m:
+            x = 2
+            y = 4
+            return (x,y)
+        if (0,2) in m:
+            x = 0
+            y = 2
+            return (x,y)
+        if (4,2) in m:
+            x = 4
+            y = 2
+            return (x,y)
+    opp_b = deepcopy(match.board)
+    opp_pb = deepcopy(match.previous_board)
+
+    rule = Rule(5)
+    rule.sb(3-pt, opp_pb, opp_b)
+    x, y, marks = osmm(rule, opp_b, 3-pt)
+    match.board[x][y] = 3 - pt
+    empty_spaces = []
+    for i in range(match.size):
+        for j in range(match.size):
+            if match.board[i][j] == 0:
+                empty_spaces.append((i,j))
+    killcount = dict()
+    for i in empty_spaces:
+        match.board[i[0]][i[1]] = pt
+        died_pis = match.fdp(3-pt)
+        match.board[i[0]][i[1]] = 0
+        if len(died_pis) >= 1:
+            print('taking out more than 1 opponents')
+            killcount[i] = len(died_pis)
+
+    killcount_remove = []
+    sorted_killcount = sorted(killcount, key = killcount.get, reverse = True)
+    match.board[x][y] = 0
+
+    if len(sorted_killcount) != 0:
+        for i in sorted_killcount:
+            #match.board[i[0]][i[1]] == pt
+            opmoves = ecm(match.board, 3- pt)
+            for j in opmoves:
+                match.board[j[0]][j[1]] = 3 - pt
+                died_pis = match.fdpm(match.board, pt)
+                match.board[j[0]][j[1]] = 0
+                if i in died_pis:
+                    killcount_remove.append(i)
+            match.board[i[0]][i[1]] = 0
+
+        for x in killcount_remove:
+            if x in sorted_killcount:
+                sorted_killcount.remove(x)
+
+
+        for i in sorted_killcount:
+            if i in m:
+                return i
+
+    x, y, marks = smm(match.board, pt)
+    print("marks\n",marks)
+    return(x,y)
+
+
+
+b_size = 5
+max_depth = 4
+max_depth_opponent = 1
+pt, pb, b = readInput(b_size)
+match = Match(b_size)
+match.sb(pt, pb, b)
+killcount=killcount(match, pt)
+act = main(killcount,match, pt)
+if act == None:
+    act = "PASS"
+writeOutput(act)
+print("marks:",em(b,1))
